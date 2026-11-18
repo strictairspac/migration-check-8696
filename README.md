@@ -5,7 +5,7 @@
 ## 场景与业务
 上游实验室交付旧字段JSON检验记录；过去人工改字段名、复制到新表并凭总行数判断成功。痛点：非法数值默默丢失、重复委托号覆盖、备份无法证明能恢复。本站登记原始行，字段映射规定类型和必填，Python逐块转换并保留拒绝原行，真实PG目标表一次提交。下游质量复核人下载对账凭据，管理员用JSON逻辑备份恢复本次运行目标并核验。
 
-四业务页：源批次、字段映射、迁移执行（可取消）、差异核对（拒绝区/目标行/备份）；管理员另有审计和回传恢复。三核心实体batches/mappings/runs，另target_rows持久化目标行。全部实体按模型/schema/service/controller/routes/前端api/store/page贯穿。
+五业务页：源批次、字段映射、迁移执行（可取消）、差异核对（拒绝区/目标行/备份）、交班核对单（版本冻结与游标续页）；管理员另有审计、回传恢复与核对权限开关。三核心实体batches/mappings/runs，另target_rows持久化目标行，handover_sheets/handover_sheet_versions/handover_sheet_pages/system_settings支撑按批次核对单。全部实体按模型/schema/service/controller/routes/前端api/store/page贯穿。
 
 ## 启动与账号
 ```sh
@@ -41,6 +41,20 @@ seed含三账号、三批次（三种正常/异常/空输入）、三映射。�
 最多2000源行、每行20列、单元格500字符；每块1-500行。逐块更新进度；取消在块间检查，最终提交前锁定run再次检查，成功目标一次提交；取消/异常没有部分目标数据。后台任务使用简单Redis单消费者；进程崩溃可能留下running状态，需人工复核并新建任务，不自动重试。
 
 下载备份为本工具目标行的逻辑JSON快照(version1)，含run_id/rows/row_hashes/checksum，不是pg_dump或物理备份，不含WAL/索引/权限。管理员恢复只允许该运行已保存checksum完全匹配的备份；先核验逐行/总体摘要、schema和自然键，再事务性替换该运行target_rows，回读重新计算摘要并保存recovery记录。篡改、错运行、未完成运行拒绝，恢复事务回滚；不能用任意新数据覆盖目标。
+
+## 交班核对单：版本冻结与游标续页
+页面按批次开交班核对单，把"开单时刻"的批次、运行清单、目标行、拒绝行复制为不可变JSON快照（handover_sheet_versions，含逐项checksum摘要）。此后新迁移与备份恢复仍可并发落库，同一张单的任何续页始终读开单时的版本，不被后写数据改变；需要纳入最新落库时显式"开新版本"，旧版本快照仍完整保留。
+
+续页分区为 runs（已完成运行）/targets（目标行）/rejected（拒绝行）。游标持久化在 handover_sheet_pages：按 (version_id, section, page) 唯一约束 + 单据行锁 `FOR UPDATE` 串行分配，计数与翻页不漏不重；锁只在单次请求事务内持有，无须为整单长占事务。每个信封返回 page/offset/next_offset/total/count/finished/delivered_key。重放已交付页（带 page 参数）返回原内容且不新增游标；跳页返回409并给出应续页码；读完后再请求为幂等完成态。游标落库，进程重启后仍可从下一页续查。
+
+失效与回收：
+- 管理员在"核对权限"开关撤回后，所有生效单立即置为 revoked，续页/开版本/新开单一律拒绝；重新授权只允许开新单，不复活任何旧单。
+- 单据到期（默认240分钟，可5-1440）由读路径惰性置为 expired，续页返回409与到期时间。
+- 到期或撤回后管理员可回收旧版本：清空快照载荷但保留摘要与翻页凭据；并发续页要么在回收前读全，要么收到 version_reclaimed/sheet_reclaimed 并提示重新开单，不会读到半份数据。
+- 详情接口的 `invalid` 字段与续页409响应都带 code/message，页面据此渲染失效横幅与重开指引，页面始终可续查或说明失效原因。
+
+接口（均需JWT）：`GET/POST /sheets`、`GET /sheets/{id}`、`POST /sheets/{id}/versions`、`GET /sheets/{id}/pages/{section}?page_size=&page=`、`POST /sheets/{id}/reclaim`（管理员）、`GET/PUT /review/permission`（PUT仅管理员）。开单/开版本需 operator 或 admin；观察员只读与续页。
+
 
 受控场景演示旧字段到新目标结构的逻辑迁移，数据库真实保存源/映射/目标/对账。不能连接远端数据库，不宣称生产异构迁移或灾备能力。
 

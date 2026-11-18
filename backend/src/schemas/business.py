@@ -1,6 +1,7 @@
 import math
 from pydantic import BaseModel,Field,model_validator
 from src.services.migration import validate_rules
+from src.constants.enums import DEFAULT_SHEET_TTL_MINUTES, MIN_SHEET_TTL_MINUTES, MAX_SHEET_TTL_MINUTES, MAX_PAGE_SIZE
 class Login(BaseModel):email:str;password:str
 class BatchInput(BaseModel):
  name:str=Field(min_length=2,max_length=120)
@@ -26,3 +27,15 @@ class RunInput(BaseModel):
  name:str=Field(min_length=2,max_length=120)
  mapping_id:int
 class RestoreInput(BaseModel):backup:dict
+class SheetInput(BaseModel):
+ name:str=Field(min_length=2,max_length=120)
+ batch_id:int
+ ttl_minutes:int=Field(default=DEFAULT_SHEET_TTL_MINUTES,ge=MIN_SHEET_TTL_MINUTES,le=MAX_SHEET_TTL_MINUTES)
+class ReviewPermissionInput(BaseModel):
+ enabled:bool
+ reason:str=Field(default='',max_length=500)
+class ReclaimInput(BaseModel):
+ version:int|None=Field(default=None,ge=1)
+class SheetPageQuery(BaseModel):
+ page_size:int=Field(default=50,ge=1,le=MAX_PAGE_SIZE)
+ page:int|None=Field(default=None,ge=1)
